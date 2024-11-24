@@ -10,4 +10,4 @@ chromadb
 langchainhub
 nest_asyncio
 gpt4all
-
+pysqlite3-binary
