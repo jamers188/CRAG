@@ -1,5 +1,5 @@
 # APIs
-openai_api_key: "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"
+openai_api_key: "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"
 openai_api_base: "https://api.openai.com/v1/chat/completions" # or your own proxy
 google_api_key: "AIzaSyBXHrAngrjce0eBaDMrehZc-IiY8JI6ThQ"
 tavily_api_key: "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"
