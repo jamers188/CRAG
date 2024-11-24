@@ -13,5 +13,4 @@ models: "openai"
 
 # Document Config
 doc_url: 
-  - "https://arxiv.org/pdf/1706.03762.pdf"  # Attention Is All You Need (Transformer paper)
-  - "https://arxiv.org/pdf/1609.03499.pdf"  # WaveNet: A Generative Model for Raw Audio
+  - https://arxiv.org/abs/2406.04744
