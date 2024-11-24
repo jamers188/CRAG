@@ -1,18 +1,17 @@
+# SQLite fix - must be at the very top before any other imports
+import sys
+sys.modules['sqlite3'] = __import__('pysqlite3')
+
 import streamlit as st
 import yaml
 import os
-import sys
-import nest_asyncio
 from typing import Dict, TypedDict
 import pprint
 from pathlib import Path
+import nest_asyncio
+
+# Now import ChromaDB and other dependencies
 import chromadb
-
-# SQLite fix for ChromaDB
-__import__('pysqlite3')
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-
-# Langchain imports
 from langchain import hub
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
@@ -38,6 +37,7 @@ if 'initialized' not in st.session_state:
     st.session_state.vectorstore = None
     st.session_state.workflow = None
     st.session_state.config = None
+    st.session_state.chroma_client = None
 
 def load_config():
     """Load configuration from YAML file"""
@@ -49,78 +49,97 @@ def load_config():
 
 def initialize_embeddings(config):
     """Initialize appropriate embeddings based on configuration"""
-    if config["run_local"] == 'Yes':
-        return GPT4AllEmbeddings()
-    elif config["models"] == 'openai':
-        base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
-        return OpenAIEmbeddings(
-            openai_api_key=config["openai_api_key"],
-            openai_api_base=base_url,
-            openai_api_type="open_ai"
-        )
-    else:
-        return GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
-            google_api_key=config["google_api_key"]
-        )
+    try:
+        if config["run_local"] == 'Yes':
+            return GPT4AllEmbeddings()
+        elif config["models"] == 'openai':
+            base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
+            return OpenAIEmbeddings(
+                openai_api_key=config["openai_api_key"],
+                openai_api_base=base_url,
+                openai_api_type="open_ai"
+            )
+        else:
+            return GoogleGenerativeAIEmbeddings(
+                model="models/embedding-001",
+                google_api_key=config["google_api_key"]
+            )
+    except Exception as e:
+        st.error(f"Error initializing embeddings: {str(e)}")
+        raise
 
-def initialize_llm(config):
-    """Initialize appropriate LLM based on configuration"""
-    if config["run_local"] == "Yes":
-        return ChatOllama(model=config["local_llm"], temperature=0)
-    elif config["models"] == "openai":
-        base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
-        return ChatOpenAI(
-            model="gpt-3.5-turbo",
-            temperature=0,
-            openai_api_key=config["openai_api_key"],
-            openai_api_base=base_url,
-            openai_api_type="open_ai"
-        )
-    else:
-        return ChatGoogleGenerativeAI(
-            model="gemini-pro",
-            google_api_key=config["google_api_key"],
-            convert_system_message_to_human=True,
-            verbose=True
-        )
+def initialize_chroma_client():
+    """Initialize ChromaDB client with error handling"""
+    try:
+        if st.session_state.chroma_client is None:
+            persist_dir = Path("./chroma_db")
+            persist_dir.mkdir(exist_ok=True)
+            
+            # Initialize with minimal settings
+            settings = chromadb.Settings(
+                is_persistent=True,
+                persist_directory=str(persist_dir),
+                anonymized_telemetry=False
+            )
+            
+            st.session_state.chroma_client = chromadb.PersistentClient(
+                path=str(persist_dir),
+                settings=settings
+            )
+            
+        return st.session_state.chroma_client
+    except Exception as e:
+        st.error(f"Error initializing ChromaDB client: {str(e)}")
+        raise
 
 def initialize_vectorstore(config):
     """Initialize ChromaDB vectorstore with documents"""
     try:
+        # Initialize ChromaDB client first
+        client = initialize_chroma_client()
+        
         # Load documents
         loader = WebBaseLoader(config["doc_url"])
         loader.requests_per_second = 1
         docs = loader.aload()
+        
+        st.info("Documents loaded successfully")
 
         # Split documents
         text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             chunk_size=500, chunk_overlap=100
         )
         all_splits = text_splitter.split_documents(docs)
+        
+        st.info("Documents split successfully")
 
         # Initialize embeddings
         embeddings = initialize_embeddings(config)
-        
-        # Ensure persistent directory exists
-        persist_dir = Path("./chroma_db")
-        persist_dir.mkdir(exist_ok=True)
-        
-        # Initialize ChromaDB client
-        client = chromadb.PersistentClient(path=str(persist_dir))
+        st.info("Embeddings initialized successfully")
         
         # Initialize vectorstore
-        vectorstore = Chroma(
-            client=client,
-            collection_name="rag-chroma",
-            embedding_function=embeddings,
-        )
+        collection_name = "rag-chroma"
+        try:
+            # Check if collection exists and delete if it does
+            if collection_name in [col.name for col in client.list_collections()]:
+                client.delete_collection(collection_name)
+                
+            vectorstore = Chroma(
+                client=client,
+                collection_name=collection_name,
+                embedding_function=embeddings,
+            )
+            
+            # Add documents to vectorstore
+            vectorstore.add_documents(documents=all_splits)
+            st.info("Vectorstore initialized successfully")
+            
+            return vectorstore
+            
+        except Exception as e:
+            st.error(f"Error with vectorstore operations: {str(e)}")
+            raise
         
-        # Add documents to vectorstore
-        vectorstore.add_documents(documents=all_splits)
-        
-        return vectorstore
-    
     except Exception as e:
         st.error(f"Error initializing vectorstore: {str(e)}")
         raise
@@ -151,19 +170,20 @@ def main():
         # Load configuration
         config = load_config()
         
-        # Debug output for OpenAI configuration
+        # Debug output for configuration
         if config["models"] == "openai":
             base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
             st.write("OpenAI API Base URL:", base_url)
 
         # Initialize vectorstore if not already done
         if not st.session_state.initialized:
-            with st.spinner("Initializing vectorstore..."):
+            with st.spinner("Initializing application..."):
                 try:
                     st.session_state.vectorstore = initialize_vectorstore(config)
                     st.session_state.initialized = True
+                    st.success("Application initialized successfully!")
                 except Exception as e:
-                    st.error(f"Failed to initialize vectorstore: {str(e)}")
+                    st.error(f"Failed to initialize application: {str(e)}")
                     return
 
         # User input
@@ -200,6 +220,7 @@ def main():
 
     except Exception as e:
         st.error(f"Application error: {str(e)}")
+        st.error("Stack trace:", exc_info=True)
 
 if __name__ == "__main__":
     main()
