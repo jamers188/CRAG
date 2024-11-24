@@ -32,21 +32,30 @@ from langchain.prompts import PromptTemplate
 # Apply nest_asyncio
 nest_asyncio.apply()
 
+# Initialize session state
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = False
+    st.session_state.vectorstore = None
+    st.session_state.workflow = None
+    st.session_state.config = None
+
 def load_config():
     """Load configuration from YAML file"""
-    config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
-    with open(config_path, 'r') as file:
-        return yaml.safe_load(file)
+    if st.session_state.config is None:
+        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        with open(config_path, 'r') as file:
+            st.session_state.config = yaml.safe_load(file)
+    return st.session_state.config
 
 def initialize_embeddings(config):
     """Initialize appropriate embeddings based on configuration"""
     if config["run_local"] == 'Yes':
         return GPT4AllEmbeddings()
     elif config["models"] == 'openai':
-        base_url = config["openai_api_base"].rstrip('/')  # Remove trailing slash if present
+        base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
         return OpenAIEmbeddings(
             openai_api_key=config["openai_api_key"],
-            openai_api_base=f"{base_url}/v1",  # Ensure correct API version path
+            openai_api_base=base_url,
             openai_api_type="open_ai"
         )
     else:
@@ -60,12 +69,12 @@ def initialize_llm(config):
     if config["run_local"] == "Yes":
         return ChatOllama(model=config["local_llm"], temperature=0)
     elif config["models"] == "openai":
-        base_url = config["openai_api_base"].rstrip('/')  # Remove trailing slash if present
+        base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
         return ChatOpenAI(
             model="gpt-3.5-turbo",
             temperature=0,
             openai_api_key=config["openai_api_key"],
-            openai_api_base=f"{base_url}/v1",  # Ensure correct API version path
+            openai_api_base=base_url,
             openai_api_type="open_ai"
         )
     else:
@@ -116,7 +125,6 @@ def initialize_vectorstore(config):
         st.error(f"Error initializing vectorstore: {str(e)}")
         raise
 
-# Your workflow classes and functions remain the same
 class GraphState(TypedDict):
     keys: Dict[str, any]
 
@@ -139,53 +147,59 @@ def main():
     st.title("CRAG Ollama Chat")
     st.text("A possible query: How is the attention mechanism implemented in code in the article?")
 
-    # Load configuration
-    config = load_config()
-    
-    # Debug output for OpenAI configuration
-    if config["models"] == "openai":
-        st.write("OpenAI API Base URL:", config["openai_api_base"])
+    try:
+        # Load configuration
+        config = load_config()
+        
+        # Debug output for OpenAI configuration
+        if config["models"] == "openai":
+            base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
+            st.write("OpenAI API Base URL:", base_url)
 
-    # Initialize vectorstore if not already done
-    if st.session_state.vectorstore is None:
-        with st.spinner("Initializing vectorstore..."):
+        # Initialize vectorstore if not already done
+        if not st.session_state.initialized:
+            with st.spinner("Initializing vectorstore..."):
+                try:
+                    st.session_state.vectorstore = initialize_vectorstore(config)
+                    st.session_state.initialized = True
+                except Exception as e:
+                    st.error(f"Failed to initialize vectorstore: {str(e)}")
+                    return
+
+        # User input
+        user_question = st.text_input("Please enter your question:")
+
+        if user_question:
             try:
-                st.session_state.vectorstore = initialize_vectorstore(config)
-            except Exception as e:
-                st.error(f"Failed to initialize vectorstore: {str(e)}")
-                return
+                # Initialize workflow if not already done
+                if st.session_state.workflow is None:
+                    workflow = setup_workflow(config)
+                    st.session_state.workflow = workflow.compile()
 
-    # User input
-    user_question = st.text_input("Please enter your question:")
-
-    if user_question:
-        try:
-            # Initialize workflow if not already done
-            if st.session_state.workflow is None:
-                workflow = setup_workflow(config)
-                st.session_state.workflow = workflow.compile()
-
-            # Process question
-            inputs = {
-                "keys": {
-                    "question": user_question,
-                    "local": config["run_local"],
+                # Process question
+                inputs = {
+                    "keys": {
+                        "question": user_question,
+                        "local": config["run_local"],
+                    }
                 }
-            }
 
-            # Create expandable sections for each step
-            for output in st.session_state.workflow.stream(inputs):
-                for key, value in output.items():
-                    with st.expander(f"Node '{key}':"):
-                        st.text(pprint.pformat(value["keys"], indent=2, width=80, depth=None))
+                # Create expandable sections for each step
+                for output in st.session_state.workflow.stream(inputs):
+                    for key, value in output.items():
+                        with st.expander(f"Node '{key}':"):
+                            st.text(pprint.pformat(value["keys"], indent=2, width=80, depth=None))
 
-            # Show final generation
-            final_generation = value['keys'].get('generation', 'No final generation produced.')
-            st.subheader("Final Generation:")
-            st.write(final_generation)
+                # Show final generation
+                final_generation = value['keys'].get('generation', 'No final generation produced.')
+                st.subheader("Final Generation:")
+                st.write(final_generation)
 
-        except Exception as e:
-            st.error(f"Error processing question: {str(e)}")
+            except Exception as e:
+                st.error(f"Error processing question: {str(e)}")
+
+    except Exception as e:
+        st.error(f"Application error: {str(e)}")
 
 if __name__ == "__main__":
     main()
