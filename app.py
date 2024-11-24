@@ -5,10 +5,11 @@ sys.modules['sqlite3'] = __import__('pysqlite3')
 import streamlit as st
 import yaml
 import os
-from typing import Dict, TypedDict
+from typing import Dict, TypedDict, List
 import pprint
 from pathlib import Path
 import nest_asyncio
+import asyncio
 
 # Now import ChromaDB and other dependencies
 import chromadb
@@ -53,11 +54,11 @@ def initialize_embeddings(config):
         if config["run_local"] == 'Yes':
             return GPT4AllEmbeddings()
         elif config["models"] == 'openai':
-            base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
+            # Extract base URL from the complete URL
+            base_url = "https://api.openai.com"
             return OpenAIEmbeddings(
                 openai_api_key=config["openai_api_key"],
-                openai_api_base=base_url,
-                openai_api_type="open_ai"
+                openai_api_base=base_url
             )
         else:
             return GoogleGenerativeAIEmbeddings(
@@ -67,6 +68,20 @@ def initialize_embeddings(config):
     except Exception as e:
         st.error(f"Error initializing embeddings: {str(e)}")
         raise
+
+async def load_documents(urls: List[str]) -> List[Document]:
+    """Load documents from multiple URLs asynchronously"""
+    all_docs = []
+    for url in urls:
+        try:
+            loader = WebBaseLoader(url)
+            loader.requests_per_second = 1
+            docs = await loader.aload()
+            all_docs.extend(docs)
+            st.info(f"Loaded documents from {url}")
+        except Exception as e:
+            st.warning(f"Error loading from {url}: {str(e)}")
+    return all_docs
 
 def initialize_chroma_client():
     """Initialize ChromaDB client with error handling"""
@@ -98,12 +113,12 @@ def initialize_vectorstore(config):
         # Initialize ChromaDB client first
         client = initialize_chroma_client()
         
-        # Load documents
-        loader = WebBaseLoader(config["doc_url"])
-        loader.requests_per_second = 1
-        docs = loader.aload()
+        # Load documents from all URLs
+        docs = asyncio.run(load_documents(config["doc_url"]))
+        if not docs:
+            raise ValueError("No documents were loaded successfully")
         
-        st.info("Documents loaded successfully")
+        st.info(f"Loaded {len(docs)} documents successfully")
 
         # Split documents
         text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
@@ -111,7 +126,7 @@ def initialize_vectorstore(config):
         )
         all_splits = text_splitter.split_documents(docs)
         
-        st.info("Documents split successfully")
+        st.info(f"Split into {len(all_splits)} chunks")
 
         # Initialize embeddings
         embeddings = initialize_embeddings(config)
@@ -170,11 +185,6 @@ def main():
         # Load configuration
         config = load_config()
         
-        # Debug output for configuration
-        if config["models"] == "openai":
-            base_url = config["openai_api_base"].rstrip('/v1').rstrip('/chat/completions').rstrip('/')
-            st.write("OpenAI API Base URL:", base_url)
-
         # Initialize vectorstore if not already done
         if not st.session_state.initialized:
             with st.spinner("Initializing application..."):
