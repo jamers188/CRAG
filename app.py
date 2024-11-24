@@ -19,14 +19,20 @@ import pprint
 import streamlit as st
 import yaml
 import nest_asyncio
-
+import os
 
 nest_asyncio.apply()
 
 # load config
 
-with open('config.yaml', 'r') as file:
+
+# Dynamically resolve the absolute path
+config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+
+with open(config_path, 'r') as file:
     config = yaml.safe_load(file)
+
+ 
 
 openai_api_key = config["openai_api_key"]
 openai_api_base = config["openai_api_base"]
