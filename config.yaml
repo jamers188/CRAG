@@ -13,5 +13,5 @@ models: "openai"
 
 # Document Config
 doc_url: 
-  - "https://nagi.fun/llm-5-transformer"  
-  - "https://nagi.fun/llm-4-wavenet"  
+  - "https://arxiv.org/pdf/1706.03762.pdf"  # Attention Is All You Need (Transformer paper)
+  - "https://arxiv.org/pdf/1609.03499.pdf"  # WaveNet: A Generative Model for Raw Audio
