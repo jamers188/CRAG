@@ -6,6 +6,7 @@ import nest_asyncio
 from typing import Dict, TypedDict
 import pprint
 from pathlib import Path
+import chromadb
 
 # SQLite fix for ChromaDB
 __import__('pysqlite3')
@@ -58,6 +59,46 @@ def initialize_embeddings(config):
             google_api_key=config["google_api_key"]
         )
 
+def initialize_vectorstore(config):
+    """Initialize ChromaDB vectorstore with documents"""
+    try:
+        # Load documents
+        loader = WebBaseLoader(config["doc_url"])
+        loader.requests_per_second = 1
+        docs = loader.aload()
+
+        # Split documents
+        text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+            chunk_size=500, chunk_overlap=100
+        )
+        all_splits = text_splitter.split_documents(docs)
+
+        # Initialize embeddings
+        embeddings = initialize_embeddings(config)
+        
+        # Ensure persistent directory exists
+        persist_dir = Path("./chroma_db")
+        persist_dir.mkdir(exist_ok=True)
+        
+        # Initialize ChromaDB client
+        client = chromadb.PersistentClient(path=str(persist_dir))
+        
+        # Initialize vectorstore
+        vectorstore = Chroma(
+            client=client,
+            collection_name="rag-chroma",
+            embedding_function=embeddings,
+        )
+        
+        # Add documents to vectorstore
+        vectorstore.add_documents(documents=all_splits)
+        
+        return vectorstore
+    
+    except Exception as e:
+        st.error(f"Error initializing vectorstore: {str(e)}")
+        raise
+
 def initialize_llm(config):
     """Initialize appropriate LLM based on configuration"""
     if config["run_local"] == "Yes":
@@ -76,37 +117,33 @@ def initialize_llm(config):
             verbose=True
         )
 
-def initialize_vectorstore(config):
-    """Initialize ChromaDB vectorstore with documents"""
-    try:
-        # Load documents
-        loader = WebBaseLoader(config["doc_url"])
-        loader.requests_per_second = 1
-        docs = loader.aload()
+# Rest of your workflow code here (retrieve, grade_documents, generate, etc.)
+class GraphState(TypedDict):
+    keys: Dict[str, any]
 
-        # Split documents
-        text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-            chunk_size=500, chunk_overlap=100
-        )
-        all_splits = text_splitter.split_documents(docs)
+def retrieve(state):
+    state_dict = state["keys"]
+    question = state_dict["question"]
+    local = state_dict["local"]
+    documents = st.session_state.vectorstore.as_retriever().get_relevant_documents(question)
+    return {"keys": {"documents": documents, "local": local, "question": question}}
 
-        # Initialize embeddings and vectorstore
-        embeddings = initialize_embeddings(config)
-        
-        # Ensure persistent directory exists
-        persist_dir = Path("./chroma_db")
-        persist_dir.mkdir(exist_ok=True)
-        
-        vectorstore = Chroma.from_documents(
-            documents=all_splits,
-            collection_name="rag-chroma",
-            embedding=embeddings,
-            persist_directory=str(persist_dir)
-        )
-        return vectorstore
-    except Exception as e:
-        st.error(f"Error initializing vectorstore: {str(e)}")
-        return None
+# Add your other workflow functions here (grade_documents, generate, transform_query, web_search, etc.)
+# Make sure to use st.session_state.vectorstore instead of the global vectorstore variable
+
+def setup_workflow(config):
+    """Set up the workflow graph"""
+    workflow = StateGraph(GraphState)
+    
+    # Define nodes
+    workflow.add_node("retrieve", retrieve)
+    # Add other nodes...
+    
+    # Set up edges
+    workflow.set_entry_point("retrieve")
+    # Add other edges...
+    
+    return workflow
 
 def main():
     st.title("CRAG Ollama Chat")
@@ -118,9 +155,10 @@ def main():
     # Initialize vectorstore if not already done
     if st.session_state.vectorstore is None:
         with st.spinner("Initializing vectorstore..."):
-            st.session_state.vectorstore = initialize_vectorstore(config)
-            if st.session_state.vectorstore is None:
-                st.error("Failed to initialize vectorstore")
+            try:
+                st.session_state.vectorstore = initialize_vectorstore(config)
+            except Exception as e:
+                st.error(f"Failed to initialize vectorstore: {str(e)}")
                 return
 
     # User input
@@ -130,7 +168,7 @@ def main():
         try:
             # Initialize workflow if not already done
             if st.session_state.workflow is None:
-                workflow = setup_workflow(config, st.session_state.vectorstore)
+                workflow = setup_workflow(config)
                 st.session_state.workflow = workflow.compile()
 
             # Process question
