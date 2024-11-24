@@ -32,12 +32,6 @@ from langchain.prompts import PromptTemplate
 # Apply nest_asyncio
 nest_asyncio.apply()
 
-# Initialize session state
-if 'vectorstore' not in st.session_state:
-    st.session_state.vectorstore = None
-if 'workflow' not in st.session_state:
-    st.session_state.workflow = None
-
 def load_config():
     """Load configuration from YAML file"""
     config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
@@ -49,14 +43,37 @@ def initialize_embeddings(config):
     if config["run_local"] == 'Yes':
         return GPT4AllEmbeddings()
     elif config["models"] == 'openai':
+        base_url = config["openai_api_base"].rstrip('/')  # Remove trailing slash if present
         return OpenAIEmbeddings(
-            openai_api_key=config["openai_api_key"], 
-            openai_api_base=config["openai_api_base"]
+            openai_api_key=config["openai_api_key"],
+            openai_api_base=f"{base_url}/v1",  # Ensure correct API version path
+            openai_api_type="open_ai"
         )
     else:
         return GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001", 
+            model="models/embedding-001",
             google_api_key=config["google_api_key"]
+        )
+
+def initialize_llm(config):
+    """Initialize appropriate LLM based on configuration"""
+    if config["run_local"] == "Yes":
+        return ChatOllama(model=config["local_llm"], temperature=0)
+    elif config["models"] == "openai":
+        base_url = config["openai_api_base"].rstrip('/')  # Remove trailing slash if present
+        return ChatOpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0,
+            openai_api_key=config["openai_api_key"],
+            openai_api_base=f"{base_url}/v1",  # Ensure correct API version path
+            openai_api_type="open_ai"
+        )
+    else:
+        return ChatGoogleGenerativeAI(
+            model="gemini-pro",
+            google_api_key=config["google_api_key"],
+            convert_system_message_to_human=True,
+            verbose=True
         )
 
 def initialize_vectorstore(config):
@@ -99,25 +116,7 @@ def initialize_vectorstore(config):
         st.error(f"Error initializing vectorstore: {str(e)}")
         raise
 
-def initialize_llm(config):
-    """Initialize appropriate LLM based on configuration"""
-    if config["run_local"] == "Yes":
-        return ChatOllama(model=config["local_llm"], temperature=0)
-    elif config["models"] == "openai":
-        return ChatOpenAI(
-            model="gpt-3.5-turbo",
-            temperature=0,
-            openai_api_key=config["openai_api_key"]
-        )
-    else:
-        return ChatGoogleGenerativeAI(
-            model="gemini-pro",
-            google_api_key=config["google_api_key"],
-            convert_system_message_to_human=True,
-            verbose=True
-        )
-
-# Rest of your workflow code here (retrieve, grade_documents, generate, etc.)
+# Your workflow classes and functions remain the same
 class GraphState(TypedDict):
     keys: Dict[str, any]
 
@@ -128,21 +127,12 @@ def retrieve(state):
     documents = st.session_state.vectorstore.as_retriever().get_relevant_documents(question)
     return {"keys": {"documents": documents, "local": local, "question": question}}
 
-# Add your other workflow functions here (grade_documents, generate, transform_query, web_search, etc.)
-# Make sure to use st.session_state.vectorstore instead of the global vectorstore variable
-
 def setup_workflow(config):
     """Set up the workflow graph"""
     workflow = StateGraph(GraphState)
-    
-    # Define nodes
     workflow.add_node("retrieve", retrieve)
-    # Add other nodes...
-    
-    # Set up edges
     workflow.set_entry_point("retrieve")
-    # Add other edges...
-    
+    workflow.add_edge("retrieve", END)
     return workflow
 
 def main():
@@ -151,6 +141,10 @@ def main():
 
     # Load configuration
     config = load_config()
+    
+    # Debug output for OpenAI configuration
+    if config["models"] == "openai":
+        st.write("OpenAI API Base URL:", config["openai_api_base"])
 
     # Initialize vectorstore if not already done
     if st.session_state.vectorstore is None:
